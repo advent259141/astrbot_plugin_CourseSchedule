@@ -25,10 +25,11 @@
 ## 🖼️ 效果预览
 
 **群友课表样式 (`/群友上什么课`)**
-*(这里可以放一张群友课表的截图)*
+*<img width="800" height="320" alt="addc76716c644d0cd3a4d19b18b2a84b" src="https://github.com/user-attachments/assets/a5527925-3b44-49bc-8eb7-726ed7b27dbc" />*
+
 
 **个人课表样式 (`/查看课表`)**
-*(这里可以放一张个人课表的截图)*
+*<img width="800" height="580" alt="45da66cf11b3111d02fddcf051f6fe1b" src="https://github.com/user-attachments/assets/e0079695-0da5-40ef-bbac-aa32116087b0" />*
 
 ## ⚙️ 文件结构
 
@@ -39,5 +40,6 @@
 *   `README.md`: 你正在阅读的这个文件。
 
 ## 🤝 贡献
+
 
 欢迎提交 Pull Request 或 Issue 来改进这个插件！
