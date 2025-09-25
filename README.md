@@ -25,11 +25,12 @@
 ## 🖼️ 效果预览
 
 **群友课表样式 (`/群友上什么课`)**
-*<img width="800" height="320" alt="addc76716c644d0cd3a4d19b18b2a84b" src="https://github.com/user-attachments/assets/a5527925-3b44-49bc-8eb7-726ed7b27dbc" />*
+*<img width="400" height="160" alt="addc76716c644d0cd3a4d19b18b2a84b" src="https://github.com/user-attachments/assets/a5527925-3b44-49bc-8eb7-726ed7b27dbc" />*
+
 
 
 **个人课表样式 (`/查看课表`)**
-*<img width="800" height="580" alt="45da66cf11b3111d02fddcf051f6fe1b" src="https://github.com/user-attachments/assets/e0079695-0da5-40ef-bbac-aa32116087b0" />*
+*<img width="400" height="290" alt="45da66cf11b3111d02fddcf051f6fe1b" src="https://github.com/user-attachments/assets/e0079695-0da5-40ef-bbac-aa32116087b0" />*
 
 ## ⚙️ 文件结构
 
@@ -43,3 +44,4 @@
 
 
 欢迎提交 Pull Request 或 Issue 来改进这个插件！
+
