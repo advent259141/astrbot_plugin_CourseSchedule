@@ -1,5 +1,5 @@
 name: astrbot_plugin_CourseSchedule
-desc: 一个用于绑定、查询和分享课程表的插件
+desc: 一个用于绑定、查询和分享课程表的插件，支持 AI 主动调用与私聊使用
 author: Jason.Joestar
-version: 1.1.5
+version: 1.2.0
 repo: https://github.com/advent259141/astrbot_plugin_CourseSchedule
