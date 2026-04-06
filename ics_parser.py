@@ -4,6 +4,7 @@
 """
 import json
 import re
+import asyncio
 from datetime import datetime, timezone, timedelta, date, time as dt_time
 from typing import Dict, List, Optional
 
@@ -13,6 +14,7 @@ from dateutil.rrule import rrulestr
 
 from astrbot.api import logger
 
+WAKEUP_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15, connect=5, sock_read=10)
 
 class ICSParser:
     """ICS 和 WakeUp 数据解析器"""
@@ -124,7 +126,7 @@ class ICSParser:
     async def fetch_wakeup_schedule(self, token: str) -> Optional[List]:
         """通过 WakeUp API 获取课程表数据"""
         url = f"https://i.wakeup.fun/share_schedule/get?key={token}"
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=WAKEUP_REQUEST_TIMEOUT) as session:
             try:
                 async with session.get(url) as response:
                     if response.status == 200:
@@ -144,7 +146,11 @@ class ICSParser:
                             f"Failed to fetch WakeUp schedule, status code: {response.status}"
                         )
                         return None
-            except Exception as e:
+            except (
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+                json.JSONDecodeError,
+            ) as e:
                 logger.error(f"Error fetching WakeUp schedule: {e}")
                 return None
 
