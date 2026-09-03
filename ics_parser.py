@@ -2,7 +2,6 @@
 """
 本模块负责处理 .ics 文件和 WakeUp 口令的解析、转换和数据获取。
 """
-import json
 import re
 from datetime import datetime, timezone, timedelta, date, time as dt_time
 from typing import Dict, List, Optional
@@ -12,6 +11,8 @@ from icalendar import Calendar, Event
 from dateutil.rrule import rrulestr
 
 from astrbot.api import logger
+
+from .wakeup_client import WakeUpClientError, fetch_wakeup_schedule
 
 
 class ICSParser:
@@ -116,37 +117,23 @@ class ICSParser:
 
     def parse_wakeup_token(self, text: str) -> Optional[str]:
         """从文本中解析 WakeUp 分享口令"""
-        match = re.search(r"「([a-f0-9]{32})」", text)
+        # 同时兼容完整分享文案、纯口令以及包含 key 的分享链接。
+        match = re.search(r"(?<![a-fA-F0-9])([a-fA-F0-9]{32})(?![a-fA-F0-9])", text)
         if match:
-            return match.group(1)
+            return match.group(1).lower()
         return None
 
     async def fetch_wakeup_schedule(self, token: str) -> Optional[List]:
-        """通过 WakeUp API 获取课程表数据"""
-        url = f"https://i.wakeup.fun/share_schedule/get?key={token}"
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data.get("status") == 1:
-                            # Wakeup 的数据是多个 JSON 对象拼接成的字符串，需要分割
-                            parts = data["data"].strip().split("\n")
-                            json_parts = [json.loads(p) for p in parts]
-                            return json_parts
-                        else:
-                            logger.error(
-                                f"WakeUp API returned error: {data.get('message')}"
-                            )
-                            return None
-                    else:
-                        logger.error(
-                            f"Failed to fetch WakeUp schedule, status code: {response.status}"
-                        )
-                        return None
-            except Exception as e:
-                logger.error(f"Error fetching WakeUp schedule: {e}")
-                return None
+        """通过 WakeUp 6.x 的加密 getv2 协议获取课程表数据。"""
+        try:
+            return await fetch_wakeup_schedule(token)
+        except WakeUpClientError as error:
+            logger.error(f"获取 WakeUp 课表失败: {error}")
+        except (aiohttp.ClientError, TimeoutError) as error:
+            logger.error(f"连接 WakeUp API 失败: {error}")
+        except Exception as error:
+            logger.error(f"解析 WakeUp 课表时发生异常: {error}")
+        return None
 
     def convert_wakeup_to_ics(self, data: List) -> Optional[str]:
         """将 WakeUp JSON 数据转换为 ICS 格式"""
