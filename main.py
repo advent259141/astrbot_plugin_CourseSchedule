@@ -1,4 +1,5 @@
 import os
+import tempfile
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict
@@ -28,6 +29,16 @@ class Main(Star):
         self.user_data = self.data_manager.load_user_data()
         self.schedule_helper = ScheduleHelper(self.data_manager, self.ics_parser, self.image_generator, self.user_data)
         self.binding_requests: Dict[str, Dict] = {}
+
+    def _validate_and_replace_ics(self, temporary_path, ics_file_path):
+        """只在新课表能正常解析后替换已有文件。"""
+        try:
+            self.ics_parser.parse_ics_file(str(temporary_path))
+        finally:
+            self.ics_parser.clear_cache(str(temporary_path))
+
+        os.replace(temporary_path, ics_file_path)
+        self.ics_parser.clear_cache(str(ics_file_path))
 
     @filter.command("绑定课表")
     async def bind_schedule(self, event: AstrMessageEvent):
@@ -95,11 +106,18 @@ class Main(Star):
                 yield event.plain_result("课程表数据解析失败，无法生成 ICS 文件。")
                 return
 
-            # 保存 ICS 文件
+            # 先验证生成的 ICS，再替换已有课表
             nickname = request.get("nickname", user_id)
             ics_file_path = self.data_manager.get_ics_file_path(user_id, group_id)
-            with open(ics_file_path, "w", encoding="utf-8") as f:
-                f.write(ics_content)
+            fd, temporary_path = tempfile.mkstemp(suffix=".ics", dir=ics_file_path.parent)
+            os.close(fd)
+            try:
+                with open(temporary_path, "w", encoding="utf-8") as f:
+                    f.write(ics_content)
+                self._validate_and_replace_ics(temporary_path, ics_file_path)
+            finally:
+                if os.path.exists(temporary_path):
+                    os.unlink(temporary_path)
 
             # --- 复用绑定成功逻辑 ---
             if group_id not in self.user_data:
@@ -123,8 +141,8 @@ class Main(Star):
             yield event.plain_result(f"通过 WakeUp 口令绑定课表成功！群号：{group_id}")
 
         except Exception as e:
-            logger.error(f"处理 WakeUp 口令失败: {e}")
-            yield event.plain_result(f"处理 WakeUp 口令失败: {e}")
+            logger.error(f"处理 WakeUp 口令失败，用户: {user_id}，群: {group_id}，错误: {e}")
+            yield event.plain_result("处理 WakeUp 口令失败，绑定未更新。")
             del self.binding_requests[request_key]
 
     @event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -164,6 +182,7 @@ class Main(Star):
         nickname = request.get("nickname", user_id)
         ics_file_path = self.data_manager.get_ics_file_path(user_id, group_id)
 
+        temporary_path = None
         try:
             # 使用File组件的异步方法获取文件
             file_path = await file_component.get_file(allow_return_url=True)
@@ -174,19 +193,32 @@ class Main(Star):
                 return
 
             logger.info(f"Downloading file from URL: {file_path}")
-            await download_file(file_path, ics_file_path)
+            fd, temporary_path = tempfile.mkstemp(suffix=".ics", dir=ics_file_path.parent)
+            os.close(fd)
+            await download_file(file_path, temporary_path)
         except Exception as e:
+            if temporary_path and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
             logger.error(f"获取文件信息失败: {e}")
-            yield event.plain_result(f"无法获取文件信息，绑定失败。错误：{str(e)}")
+            yield event.plain_result("无法获取课表文件，绑定失败。")
             del self.binding_requests[request_key]
             return
 
-        # 检查下载的文件是否存在
-        if not os.path.exists(ics_file_path):
-            logger.error(f"文件下载失败，文件不存在: {ics_file_path}")
-            yield event.plain_result("文件下载失败，请重试。")
+        try:
+            if os.path.getsize(temporary_path) == 0:
+                raise ValueError("下载的课表文件为空")
+            self._validate_and_replace_ics(temporary_path, ics_file_path)
+        except Exception as e:
+            logger.error(
+                f"绑定课表失败，用户: {user_id}，群: {group_id}，文件: {temporary_path}，错误: {e}"
+            )
+            yield event.plain_result("课表文件解析或保存失败，绑定未更新。")
             del self.binding_requests[request_key]
             return
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+
         logger.info(event.message_obj.raw_message)  # 平台下发的原始消息在这里
         logger.info(f"文件下载成功，文件路径: {ics_file_path}")
         logger.info(f"文件大小: {os.path.getsize(ics_file_path)} bytes")
@@ -292,6 +324,7 @@ class Main(Star):
         end_of_week = start_of_week + timedelta(days=6)
 
         ranking_data = []
+        parse_failed = False
         group_users = self.user_data[group_id].get("users", {})
 
         for user_id, user_info in group_users.items():
@@ -299,7 +332,14 @@ class Main(Star):
             if not os.path.exists(ics_file_path):
                 continue
 
-            courses = self.ics_parser.parse_ics_file(str(ics_file_path))
+            try:
+                courses = self.ics_parser.parse_ics_file(str(ics_file_path))
+            except Exception as error:
+                logger.error(
+                    f"解析课表失败，用户: {user_id}，群: {group_id}，文件: {ics_file_path}，错误: {error}"
+                )
+                parse_failed = True
+                continue
             total_duration = timedelta()
             course_count = 0
 
@@ -320,7 +360,12 @@ class Main(Star):
                 )
 
         if not ranking_data:
-            yield event.plain_result("本周大家都没有课呢！")
+            message = (
+                "有课表文件解析失败，暂时无法确定完整排行。"
+                if parse_failed
+                else "本周大家都没有课呢！"
+            )
+            yield event.plain_result(message)
             return
 
         # 根据总时长降序排名

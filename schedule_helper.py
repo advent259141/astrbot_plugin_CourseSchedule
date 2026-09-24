@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timezone, timedelta
 
+from astrbot.api import logger
+
 
 
 class ScheduleHelper:
@@ -28,7 +30,13 @@ class ScheduleHelper:
         if not os.path.exists(ics_file_path):
             return None, "课表文件不存在，可能已被删除。请重新绑定。"
 
-        courses = self.ics_parser.parse_ics_file(str(ics_file_path))
+        try:
+            courses = self.ics_parser.parse_ics_file(str(ics_file_path))
+        except Exception as error:
+            logger.error(
+                f"解析课表失败，用户: {user_id}，群: {group_id}，文件: {ics_file_path}，错误: {error}"
+            )
+            return None, "课表文件解析失败，请重新绑定课表。"
 
         target_courses = []
         for course in courses:
@@ -83,6 +91,7 @@ class ScheduleHelper:
         shanghai_tz = timezone(timedelta(hours=8))
         now = datetime.now(shanghai_tz)
         next_courses = []
+        parse_failed = False
 
         group_users = self.user_data[group_id].get("users", {})
         for user_id, user_info in group_users.items():
@@ -91,7 +100,14 @@ class ScheduleHelper:
             if not os.path.exists(ics_file_path):
                 continue
 
-            courses = self.ics_parser.parse_ics_file(str(ics_file_path))
+            try:
+                courses = self.ics_parser.parse_ics_file(str(ics_file_path))
+            except Exception as error:
+                logger.error(
+                    f"解析课表失败，用户: {user_id}，群: {group_id}，文件: {ics_file_path}，错误: {error}"
+                )
+                parse_failed = True
+                continue
 
             # 筛选目标日期的课程
             target_date_courses = [
@@ -164,6 +180,8 @@ class ScheduleHelper:
             next_courses.append(user_course_copy)
 
         if not next_courses:
+            if parse_failed:
+                return None, "群课表文件解析失败，请相关成员重新绑定课表。"
             return None, f"群友们{'接下来都没有课啦！' if is_today else '明天都没有课啦！'}"
 
         # 排序时，将无课的用户（start_time is None）排在最后
