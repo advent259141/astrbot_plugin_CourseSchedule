@@ -139,7 +139,7 @@ class InvalidICSTests(unittest.IsolatedAsyncioTestCase):
         plugin.user_data = self.user_data
         plugin.image_generator = Mock()
         plugin.image_generator.generate_ranking_image = Mock(
-            side_effect=lambda *args: asyncio.sleep(0, result=args[0])
+            side_effect=lambda *args, **kwargs: asyncio.sleep(0, result=args[0])
         )
         results = [item async for item in plugin.weekly_course_ranking(Event())]
         self.assertEqual(len(results), 1)

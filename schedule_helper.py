@@ -14,94 +14,71 @@ class ScheduleHelper:
         self.image_generator = image_generator
         self.user_data = user_data
 
-    async def get_schedule_for_date(self, event, target_date, date_description):
-        """根据指定日期获取个人课程安排，包含完整的用户验证逻辑"""
-        user_id = event.get_sender_id()
+    async def get_schedule_for_date(
+        self, event, target_date, date_description, user_id=None, include_all=False
+    ):
+        """查询当前群内某位成员的课程，显式日期可包含当天已结束课程。"""
+        user_id = user_id or event.get_sender_id()
         group_id = event.get_group_id()
-
-        if (
-            not group_id
-            or group_id not in self.user_data
-            or user_id not in self.user_data[group_id].get("users", {})
-        ):
+        group_users = self.user_data.get(group_id, {}).get("users", {})
+        if not group_id or user_id not in group_users:
+            if user_id != event.get_sender_id():
+                return None, "该成员还没有在这个群绑定课表。"
             return None, "你还没有在这个群绑定课表哦，请在群内发送 /绑定课表 指令，然后发送 .ics 文件来绑定。"
 
         ics_file_path = self.data_manager.get_ics_file_path(user_id, group_id)
         if not os.path.exists(ics_file_path):
             return None, "课表文件不存在，可能已被删除。请重新绑定。"
-
         try:
-            courses = self.ics_parser.parse_ics_file(str(ics_file_path))
+            courses = self.ics_parser.parse_ics_file(
+                str(ics_file_path), start_date=target_date, end_date=target_date
+            )
         except Exception as error:
             logger.error(
                 f"解析课表失败，用户: {user_id}，群: {group_id}，文件: {ics_file_path}，错误: {error}"
             )
             return None, "课表文件解析失败，请重新绑定课表。"
 
+        now = datetime.now(timezone(timedelta(hours=8)))
+        nickname = group_users[user_id].get("nickname", user_id)
         target_courses = []
         for course in courses:
-            if course["start_time"].date() == target_date:
-                # Only filter by current time for today
-                if target_date == datetime.now(timezone(timedelta(hours=8))).date():
-                    if course["start_time"] > datetime.now(timezone(timedelta(hours=8))):
-                        target_courses.append(course)
-                else:
-                    # For future dates, include all courses
-                    target_courses.append(course)
-
+            if course["start_time"].date() != target_date:
+                continue
+            if not include_all and target_date == now.date() and course["start_time"] <= now:
+                continue
+            course_copy = dict(course)
+            course_copy["nickname"] = nickname
+            target_courses.append(course_copy)
         if not target_courses:
-            # Map date_description to short form for error message
-            date_map = {
-                "的今日课程": "今天",
-                "的明日课程": "明天"
-            }
-            date_str = date_map.get(date_description)
-            return None, f"你{date_str}没有课啦！"
-
-        # Sort courses by start time
-        target_courses.sort(key=lambda x: x["start_time"])
-
-        # Add nickname to each course for image generation
-        for course in target_courses:
-            nickname = (
-                self.user_data[group_id]["users"]
-                .get(user_id, {})
-                .get("nickname", user_id)
+            date_text = {"的今日课程": "今天", "的明日课程": "明天"}.get(
+                date_description, target_date.isoformat()
             )
-            course["nickname"] = nickname
-
+            name = "你" if user_id == event.get_sender_id() else nickname
+            return None, f"{name}在{date_text}没有课啦！"
+        target_courses.sort(key=lambda course: course["start_time"])
         return target_courses, None
 
-    async def get_group_schedule_for_date(self, event, target_date, is_today=True):
-        """根据指定日期获取群友课程安排
-
-        Args:
-            event: 消息事件
-            target_date: 目标日期
-            is_today: 是否为今天，True时优先显示正在进行的课程，False时显示最早的课程
-
-        Returns:
-            tuple: (课程列表, 错误信息)
-        """
+    async def get_group_schedule_for_date(
+        self, event, target_date, is_today=True, reference_time=None
+    ):
+        """按指定日期及时刻查询群友当前课程或下一节课程。"""
         group_id = event.get_group_id()
         if not group_id or group_id not in self.user_data:
             return None, "本群还没有人绑定课表哦。"
-
-        # 使用上海时区 (UTC+8)
         shanghai_tz = timezone(timedelta(hours=8))
-        now = datetime.now(shanghai_tz)
+        now = reference_time or datetime.now(shanghai_tz)
+        use_current_time = is_today or reference_time is not None
         next_courses = []
         parse_failed = False
-
-        group_users = self.user_data[group_id].get("users", {})
-        for user_id, user_info in group_users.items():
-            nickname = user_info.get("nickname", user_id)
+        for user_id, user_info in self.user_data[group_id].get("users", {}).items():
             ics_file_path = self.data_manager.get_ics_file_path(user_id, group_id)
             if not os.path.exists(ics_file_path):
                 continue
-
             try:
-                courses = self.ics_parser.parse_ics_file(str(ics_file_path))
+                courses = self.ics_parser.parse_ics_file(
+                    str(ics_file_path), start_date=target_date, end_date=target_date
+                )
             except Exception as error:
                 logger.error(
                     f"解析课表失败，用户: {user_id}，群: {group_id}，文件: {ics_file_path}，错误: {error}"
@@ -109,82 +86,37 @@ class ScheduleHelper:
                 parse_failed = True
                 continue
 
-            # 筛选目标日期的课程
-            target_date_courses = [
-                c
-                for c in courses
-                if c.get("start_time") and c.get("start_time").date() == target_date
-            ]
-
-            user_next_course = None
-            if is_today:
-                # 今天的方法：优先找正在进行的课程，否则找接下来的课程
-                user_current_course = None
-                user_future_course = None
-
-                for course in target_date_courses:
-                    start_time = course.get("start_time")
-                    end_time = course.get("end_time")
-
-                    if start_time and end_time:
-                        # 检查是否是正在进行的课程
-                        if start_time <= now < end_time:
-                            user_current_course = course
-                            break  # 找到正在上的课，就不需要再找下一节了
-
-                        # 检查是否是未来的课程
-                        elif start_time > now:
-                            if (
-                                user_future_course is None
-                                or start_time < user_future_course.get("start_time")
-                            ):
-                                user_future_course = course
-
-                # 优先显示正在上的课
-                user_next_course = (
-                    user_current_course if user_current_course else user_future_course
-                )
+            if use_current_time:
+                current_courses = [
+                    course for course in courses
+                    if course["start_time"] <= now < course["end_time"]
+                ]
+                future_courses = [
+                    course for course in courses if course["start_time"] > now
+                ]
+                selected = current_courses or future_courses
             else:
-                # 明天的方法：找最早的一节课
-                for course in target_date_courses:
-                    start_time = course.get("start_time")
-                    if start_time:
-                        # 找到最早的课程
-                        if user_next_course is None or start_time < user_next_course.get("start_time"):
-                            user_next_course = course
-
-            # 无论用户当天是否有课，都为他创建一个条目
+                selected = [
+                    course for course in courses
+                    if course["start_time"].date() == target_date
+                ]
+            user_next_course = min(selected, key=lambda course: course["start_time"]) if selected else None
+            nickname = user_info.get("nickname", user_id)
             if user_next_course:
-                # 用户有课
-                user_course_copy = {
-                    "summary": user_next_course["summary"],
-                    "description": user_next_course["description"],
-                    "location": user_next_course["location"],
-                    "start_time": user_next_course["start_time"],
-                    "end_time": user_next_course["end_time"],
-                    "user_id": user_id,
-                    "nickname": nickname,
-                }
+                user_course = dict(user_next_course)
+                user_course.update(user_id=user_id, nickname=nickname)
             else:
-                # 用户当天没课
-                summary = "今日无课" if is_today else "明日无课"
-                user_course_copy = {
-                    "summary": summary,
-                    "description": "",
-                    "location": "",
-                    "start_time": None,  # 标记为无课
-                    "end_time": None,
-                    "user_id": user_id,
-                    "nickname": nickname,
+                user_course = {
+                    "summary": "当前及后续无课" if use_current_time else "当天无课",
+                    "description": "", "location": "",
+                    "start_time": None, "end_time": None,
+                    "user_id": user_id, "nickname": nickname,
                 }
-            next_courses.append(user_course_copy)
+            next_courses.append(user_course)
 
         if not next_courses:
             if parse_failed:
                 return None, "群课表文件解析失败，请相关成员重新绑定课表。"
-            return None, f"群友们{'接下来都没有课啦！' if is_today else '明天都没有课啦！'}"
-
-        # 排序时，将无课的用户（start_time is None）排在最后
-        next_courses.sort(key=lambda x: (x["start_time"] is None, x["start_time"]))
-
+            return None, "本群没有可查询的课表。"
+        next_courses.sort(key=lambda course: (course["start_time"] is None, course["start_time"]))
         return next_courses, None

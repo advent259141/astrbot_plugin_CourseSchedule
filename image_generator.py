@@ -129,12 +129,12 @@ class ImageGenerator:
         total_seconds_start = int((start_time - now).total_seconds())
         total_seconds_end = int((end_time - now).total_seconds())
         
-        if total_seconds_start < 0 <= total_seconds_end:
+        if start_time <= now < end_time:
             # 课程进行中
             status_text = "进行中"
             remaining_minutes = total_seconds_end // 60
             detail_text = self._format_duration(remaining_minutes, "剩余", "")
-        elif total_seconds_start > 0:
+        elif now < start_time:
             # 课程未开始
             status_text = "下一节"
             delta_minutes = total_seconds_start // 60
@@ -219,12 +219,18 @@ class ImageGenerator:
             tasks = [fetch_avatar(session, user_id) for user_id in user_ids]
             return await asyncio.gather(*tasks)
 
-    async def generate_schedule_image(self, courses: List[Dict], date_type: str = "today") -> str:
+    async def generate_schedule_image(
+        self,
+        courses: List[Dict],
+        date_type: str = "today",
+        reference_time: Optional[datetime] = None,
+    ) -> str:
         """生成课程表图片并返回临时文件路径
 
         Args:
             courses: 课程列表
             date_type: 日期类型，"today", "tomorrow", 或自定义日期类型如"本周三"等
+            reference_time: 计算课程状态和等待时长所用的参考时刻；未提供时使用当前时间
         """
         height = c.GS_PADDING * 2 + 120 + len(courses) * c.GS_ROW_HEIGHT
         image = Image.new("RGB", (c.GS_WIDTH, height), c.GS_BG_COLOR)
@@ -241,7 +247,7 @@ class ImageGenerator:
         elif date_type == "tomorrow":
             title = "“群友明天上什么课?”"
         else:
-            title = f"“群友{date_type}上什么课?”"
+            title = "“群友在上什么课?”"
 
         draw.text(
             (c.GS_PADDING + 40, c.GS_PADDING),
@@ -259,11 +265,20 @@ class ImageGenerator:
             fill="#A7FFEB",
         )
 
+        if date_type not in ("today", "tomorrow"):
+            query_label = "查询时间" if ":" in date_type else "查询日期"
+            draw.text(
+                (c.GS_PADDING + 60, c.GS_PADDING + 80),
+                f"{query_label}：{date_type}",
+                font=self.font_subtitle,
+                fill="#757575",
+            )
+
         user_ids = [course.get("user_id", "N/A") for course in courses]
         avatar_datas = await self._fetch_avatars(user_ids)
 
         y_offset = c.GS_PADDING + 120
-        now = datetime.now(timezone(timedelta(hours=8)))
+        now = reference_time or datetime.now(timezone(timedelta(hours=8)))
 
         for i, course in enumerate(courses):
             user_id = course.get("user_id", "N/A")
@@ -431,7 +446,12 @@ class ImageGenerator:
         return temp_path
 
     async def generate_ranking_image(
-        self, ranking_data: List[Dict], start_date: date, end_date: date
+        self,
+        ranking_data: List[Dict],
+        start_date: Optional[date],
+        end_date: Optional[date],
+        title: str = "本周上课排行榜",
+        subtitle: Optional[str] = None,
     ) -> str:
         """生成排行榜图片"""
         height = (
@@ -444,13 +464,18 @@ class ImageGenerator:
 
         draw.text(
             (c.RANKING_PADDING, c.RANKING_PADDING),
-            "本周上课排行榜",
+            title,
             font=self.font_title,
             fill=c.RANKING_TITLE_COLOR,
         )
-        date_range_str = (
-            f"{start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
-        )
+        date_range_str = subtitle
+        if date_range_str is None:
+            if start_date is not None and end_date is not None:
+                date_range_str = (
+                    f"{start_date.strftime('%Y/%m/%d')} - {end_date.strftime('%Y/%m/%d')}"
+                )
+            else:
+                date_range_str = ""
         draw.text(
             (c.RANKING_PADDING, c.RANKING_PADDING + 70),
             date_range_str,

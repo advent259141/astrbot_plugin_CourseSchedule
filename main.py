@@ -14,6 +14,7 @@ from .data_manager import DataManager
 from .ics_parser import ICSParser
 from .image_generator import ImageGenerator
 from .schedule_helper import ScheduleHelper
+from .query_utils import command_arguments, mentioned_user, parse_date, parse_group_moment
 
 SHANGHAI_TZ = timezone(timedelta(hours=8))
 
@@ -245,134 +246,169 @@ class Main(Star):
 
     @filter.command("查看课表")
     async def show_today_schedule(self, event: AstrMessageEvent):
-        """查看今天还有什么课"""
-        # 使用上海时区 (UTC+8)
+        """查看自己或 @成员的课表，可指定日期。"""
         now = datetime.now(SHANGHAI_TZ)
-        today = now.date()
+        try:
+            arguments = command_arguments(event, "查看课表")
+            user_id = mentioned_user(event) or event.get_sender_id()
+            target_date = parse_date(arguments, now) if arguments else now.date()
+        except ValueError as error:
+            yield event.plain_result(str(error))
+            return
 
-        courses, error_msg = await self.schedule_helper.get_schedule_for_date(event, today, "的今日课程")
-
+        description = f"在{target_date.isoformat()}的课程" if arguments else "的今日课程"
+        courses, error_msg = await self.schedule_helper.get_schedule_for_date(
+            event, target_date, description,
+            user_id=user_id, include_all=bool(arguments)
+        )
         if error_msg:
             yield event.plain_result(error_msg)
             return
-
+        nickname = courses[0].get("nickname") or user_id
         image_path = await self.image_generator.generate_user_schedule_image(
-            courses, event.get_sender_name(), "的今日课程"
+            courses, nickname, description
         )
         yield event.image_result(image_path)
 
     @filter.command("查看明日课表")
     async def show_tomorrow_schedule(self, event: AstrMessageEvent):
-        """查看明天还有什么课"""
-        # 使用上海时区 (UTC+8)
-        now = datetime.now(SHANGHAI_TZ)
-        tomorrow = now.date() + timedelta(days=1)
-
-        courses, error_msg = await self.schedule_helper.get_schedule_for_date(event, tomorrow, "的明日课程")
-
+        """查看自己明天的课表。"""
+        tomorrow = datetime.now(SHANGHAI_TZ).date() + timedelta(days=1)
+        courses, error_msg = await self.schedule_helper.get_schedule_for_date(
+            event, tomorrow, "的明日课程", include_all=True
+        )
         if error_msg:
             yield event.plain_result(error_msg)
             return
-
-        image_path = await self.image_generator.generate_user_schedule_image(courses, event.get_sender_name(), "的明日课程"
+        image_path = await self.image_generator.generate_user_schedule_image(
+            courses, courses[0].get("nickname") or event.get_sender_name(), "的明日课程"
         )
         yield event.image_result(image_path)
 
     @filter.command("群友在上什么课")
     async def show_group_now_schedule(self, event: AstrMessageEvent):
-        """查看群友接下来有什么课"""
-        # 使用上海时区 (UTC+8)
+        """查询指定日期及时刻群友正在上或接下来的一节课。"""
         now = datetime.now(SHANGHAI_TZ)
-        today = now.date()
-
-        next_courses, error_msg = await self.schedule_helper.get_group_schedule_for_date(event, today, is_today=True)
-
+        try:
+            arguments = command_arguments(event, "群友在上什么课")
+            target_date, reference_time, date_type = parse_group_moment(arguments, now)
+        except ValueError as error:
+            yield event.plain_result(str(error))
+            return
+        courses, error_msg = await self.schedule_helper.get_group_schedule_for_date(
+            event, target_date, reference_time=reference_time
+        )
         if error_msg:
             yield event.plain_result(error_msg)
             return
-
-        image_bytes = await self.image_generator.generate_schedule_image(next_courses, date_type="today")
-        yield event.image_result(image_bytes)
+        image_path = await self.image_generator.generate_schedule_image(
+            courses, date_type=date_type, reference_time=reference_time
+        )
+        yield event.image_result(image_path)
 
     @filter.command("群友明天上什么课")
     async def show_group_tomorrow_schedule(self, event: AstrMessageEvent):
-        """查看群友明天有什么课"""
-        # 使用上海时区 (UTC+8)
-        now = datetime.now(SHANGHAI_TZ)
-        tomorrow = now.date() + timedelta(days=1)  # 明天的日期
-
-        next_courses, error_msg = await self.schedule_helper.get_group_schedule_for_date(event, tomorrow, is_today=False)
-
+        """查看群友明天的第一节课。"""
+        tomorrow = datetime.now(SHANGHAI_TZ).date() + timedelta(days=1)
+        courses, error_msg = await self.schedule_helper.get_group_schedule_for_date(
+            event, tomorrow, is_today=False
+        )
         if error_msg:
             yield event.plain_result(error_msg)
             return
-
-        image_bytes = await self.image_generator.generate_schedule_image(next_courses, date_type="tomorrow")
-        yield event.image_result(image_bytes)
+        image_path = await self.image_generator.generate_schedule_image(courses, date_type="tomorrow")
+        yield event.image_result(image_path)
 
     @filter.command("本周上课排行")
     async def weekly_course_ranking(self, event: AstrMessageEvent):
-        """生成本周上课排行榜"""
+        """生成本周上课排行榜。"""
+        async for result in self._course_ranking(event):
+            yield result
+
+    @filter.command("上周上课排行")
+    async def previous_week_course_ranking(self, event: AstrMessageEvent):
+        """生成上周上课排行榜。"""
+        async for result in self._course_ranking(event, week_offset=-1):
+            yield result
+
+    @filter.command("下周上课排行")
+    async def next_week_course_ranking(self, event: AstrMessageEvent):
+        """生成下周上课排行榜。"""
+        async for result in self._course_ranking(event, week_offset=1):
+            yield result
+
+    @filter.command("全学期上课排行")
+    async def semester_course_ranking(self, event: AstrMessageEvent):
+        """统计各成员当前绑定 ICS 中的全部课程。"""
+        async for result in self._course_ranking(event, all_courses=True):
+            yield result
+
+    async def _course_ranking(self, event, week_offset=0, all_courses=False):
         group_id = event.get_group_id()
         if not group_id or group_id not in self.user_data:
             yield event.plain_result("本群还没有人绑定课表哦。")
             return
 
-        now = datetime.now(SHANGHAI_TZ)
-        today = now.date()
-        start_of_week = today - timedelta(days=today.weekday())
-        end_of_week = start_of_week + timedelta(days=6)
-
+        if all_courses:
+            start_date = end_date = None
+            period_name = "全学期"
+        else:
+            today = datetime.now(SHANGHAI_TZ).date()
+            start_date = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
+            end_date = start_date + timedelta(days=6)
+            period_name = {-1: "上周", 0: "本周", 1: "下周"}[week_offset]
         ranking_data = []
         parse_failed = False
-        group_users = self.user_data[group_id].get("users", {})
-
-        for user_id, user_info in group_users.items():
-            ics_file_path = self.data_manager.get_ics_file_path(user_id, group_id)
-            if not os.path.exists(ics_file_path):
+        for user_id, user_info in self.user_data[group_id].get("users", {}).items():
+            file_path = self.data_manager.get_ics_file_path(user_id, group_id)
+            if not os.path.exists(file_path):
+                parse_failed = True
                 continue
-
             try:
-                courses = self.ics_parser.parse_ics_file(str(ics_file_path))
+                courses = self.ics_parser.parse_ics_file(
+                    str(file_path), start_date=start_date, end_date=end_date,
+                    all_courses=all_courses
+                )
             except Exception as error:
                 logger.error(
-                    f"解析课表失败，用户: {user_id}，群: {group_id}，文件: {ics_file_path}，错误: {error}"
+                    f"统计课表失败，用户: {user_id}，群: {group_id}，文件: {file_path}，错误: {error}"
                 )
                 parse_failed = True
                 continue
-            total_duration = timedelta()
-            course_count = 0
-
-            for course in courses:
-                course_date = course["start_time"].date()
-                if start_of_week <= course_date <= end_of_week:
-                    total_duration += course["end_time"] - course["start_time"]
-                    course_count += 1
-
-            if course_count > 0:
-                ranking_data.append(
-                    {
-                        "user_id": user_id,
-                        "nickname": user_info.get("nickname", user_id),
-                        "total_duration": total_duration,
-                        "course_count": course_count,
-                    }
-                )
-
+            selected_courses = [
+                course for course in courses
+                if all_courses or start_date <= course["start_time"].date() <= end_date
+            ]
+            if selected_courses:
+                ranking_data.append({
+                    "user_id": user_id,
+                    "nickname": user_info.get("nickname", user_id),
+                    "total_duration": sum(
+                        (course["end_time"] - course["start_time"] for course in selected_courses),
+                        timedelta()
+                    ),
+                    "course_count": len(selected_courses),
+                })
         if not ranking_data:
             message = (
-                "有课表文件解析失败，暂时无法确定完整排行。"
-                if parse_failed
-                else "本周大家都没有课呢！"
+                f"有课表文件解析失败或无法完整统计，暂时无法生成{period_name}排行。"
+                if parse_failed else f"{period_name}大家都没有课呢！"
             )
+            if all_courses and parse_failed:
+                message += "全学期统计要求重复课程具有结束日期或次数，单次最多展开 10000 次。"
             yield event.plain_result(message)
             return
 
-        # 根据总时长降序排名
-        ranking_data.sort(key=lambda x: x["total_duration"], reverse=True)
-
+        ranking_data.sort(key=lambda row: row["total_duration"], reverse=True)
+        if all_courses and parse_failed:
+            yield event.plain_result(
+                "部分成员课表无法完整展开，已跳过，排行可能不完整。"
+                "全学期统计要求重复课程具有结束日期或次数，单次最多展开 10000 次。"
+            )
+        subtitle = "各成员当前绑定课表中的全部课程" if all_courses else None
         image_path = await self.image_generator.generate_ranking_image(
-            ranking_data, start_of_week, end_of_week
+            ranking_data, start_date, end_date,
+            title=f"{period_name}上课排行榜", subtitle=subtitle
         )
         yield event.image_result(image_path)
 
